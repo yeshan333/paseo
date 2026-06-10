@@ -28,6 +28,7 @@ import {
   resolveACPModelSelection,
   summarizeACPRequestError,
 } from "./acp-agent.js";
+import * as treeKillModule from "../../../utils/tree-kill.js";
 import {
   COPILOT_ALLOW_ALL_MODE_ID,
   COPILOT_MODES,
@@ -1865,5 +1866,83 @@ describe("ACPAgentSession", () => {
     await expect(turnFailed).resolves.toMatchObject({
       error: expect.not.stringContaining("[object Object]"),
     });
+  });
+});
+
+interface ACPCloseInternals {
+  child: ChildProcess | null;
+  closed: boolean;
+  connection: unknown;
+  sessionId: string | null;
+  terminalEntries: Map<string, { child: ChildProcess; exit: unknown }>;
+  subscribers: Map<unknown, unknown>;
+  activeForegroundTurnId: string | null;
+}
+
+describe("ACPAgentSession close() tree-kill", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("close() uses terminateWithTreeKill for the main child process", async () => {
+    const terminateWithTreeKill = vi
+      .spyOn(treeKillModule, "terminateWithTreeKill")
+      .mockResolvedValue("terminated");
+    const session = createSession();
+    const internals = asInternals<ACPCloseInternals>(session);
+
+    const child = createTerminalChildStub();
+    internals.child = child;
+    internals.connection = null;
+    internals.sessionId = null;
+
+    await session.close();
+
+    expect(terminateWithTreeKill).toHaveBeenCalledWith(child, {
+      gracefulTimeoutMs: 2_000,
+      forceTimeoutMs: 2_000,
+    });
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  test("close() uses terminateWithTreeKill for terminal child processes", async () => {
+    const terminateWithTreeKill = vi
+      .spyOn(treeKillModule, "terminateWithTreeKill")
+      .mockResolvedValue("terminated");
+    const session = createSession();
+    const internals = asInternals<ACPCloseInternals>(session);
+
+    const terminalChild = createTerminalChildStub();
+    internals.terminalEntries = new Map([["terminal-1", { child: terminalChild, exit: null }]]);
+    internals.child = null;
+    internals.connection = null;
+    internals.sessionId = null;
+
+    await session.close();
+
+    expect(terminateWithTreeKill).toHaveBeenCalledWith(terminalChild, {
+      gracefulTimeoutMs: 2_000,
+      forceTimeoutMs: 2_000,
+    });
+    expect(terminalChild.kill).not.toHaveBeenCalled();
+  });
+
+  test("killTerminal uses terminateWithTreeKill instead of direct SIGTERM", async () => {
+    const terminateWithTreeKill = vi
+      .spyOn(treeKillModule, "terminateWithTreeKill")
+      .mockResolvedValue("terminated");
+    const session = createSession();
+    const internals = asInternals<ACPCloseInternals>(session);
+
+    const child = createTerminalChildStub();
+    internals.terminalEntries = new Map([["terminal-1", { child, exit: null }]]);
+
+    await session.killTerminal({ sessionId: "session-1", terminalId: "terminal-1" });
+
+    expect(terminateWithTreeKill).toHaveBeenCalledWith(child, {
+      gracefulTimeoutMs: 2_000,
+      forceTimeoutMs: 2_000,
+    });
+    expect(child.kill).not.toHaveBeenCalled();
   });
 });
