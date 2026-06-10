@@ -1,4 +1,4 @@
-import { type ChildProcess } from "node:child_process";
+import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
@@ -141,6 +141,35 @@ function createTerminalChildStub(): ChildProcess {
   child.stderr = new EventEmitter() as ChildProcess["stderr"];
   child.kill = vi.fn(() => true) as ChildProcess["kill"];
   return child;
+}
+
+function createProbeChildStub(order: string[]): ChildProcessWithoutNullStreams {
+  const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+  child.stdin = {
+    destroy: vi.fn(() => {
+      order.push("stdin.destroy");
+    }),
+  } as ChildProcessWithoutNullStreams["stdin"];
+  child.stdout = {
+    destroy: vi.fn(() => {
+      order.push("stdout.destroy");
+    }),
+  } as ChildProcessWithoutNullStreams["stdout"];
+  child.stderr = {
+    destroy: vi.fn(() => {
+      order.push("stderr.destroy");
+    }),
+  } as ChildProcessWithoutNullStreams["stderr"];
+  child.kill = vi.fn(() => true) as ChildProcessWithoutNullStreams["kill"];
+  return child;
+}
+
+function createDeferredTermination(): { promise: Promise<"terminated">; resolve: () => void } {
+  let resolveTermination: () => void = () => {};
+  const promise = new Promise<"terminated">((resolve) => {
+    resolveTermination = () => resolve("terminated");
+  });
+  return { promise, resolve: resolveTermination };
 }
 
 function selectConfigOption(
@@ -1927,6 +1956,39 @@ describe("ACPAgentSession close() tree-kill", () => {
     expect(terminalChild.kill).not.toHaveBeenCalled();
   });
 
+  test("close() terminates terminal child processes in parallel", async () => {
+    const resolvers: Array<() => void> = [];
+    const terminateWithTreeKill = vi
+      .spyOn(treeKillModule, "terminateWithTreeKill")
+      .mockImplementation(() => {
+        const termination = createDeferredTermination();
+        resolvers.push(termination.resolve);
+        return termination.promise;
+      });
+    const session = createSession();
+    const internals = asInternals<ACPCloseInternals>(session);
+
+    const firstTerminalChild = createTerminalChildStub();
+    const secondTerminalChild = createTerminalChildStub();
+    internals.terminalEntries = new Map([
+      ["terminal-1", { child: firstTerminalChild, exit: null }],
+      ["terminal-2", { child: secondTerminalChild, exit: null }],
+    ]);
+    internals.child = null;
+    internals.connection = null;
+    internals.sessionId = null;
+
+    const close = session.close();
+    await Promise.resolve();
+
+    expect(terminateWithTreeKill).toHaveBeenCalledTimes(2);
+
+    for (const resolve of resolvers) {
+      resolve();
+    }
+    await close;
+  });
+
   test("killTerminal uses terminateWithTreeKill instead of direct SIGTERM", async () => {
     const terminateWithTreeKill = vi
       .spyOn(treeKillModule, "terminateWithTreeKill")
@@ -1944,5 +2006,47 @@ describe("ACPAgentSession close() tree-kill", () => {
       forceTimeoutMs: 2_000,
     });
     expect(child.kill).not.toHaveBeenCalled();
+  });
+});
+
+describe("ACPAgentClient probe cleanup", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("signals the probe process tree before destroying stdio", async () => {
+    const order: string[] = [];
+    const terminateWithTreeKill = vi
+      .spyOn(treeKillModule, "terminateWithTreeKill")
+      .mockImplementation(async () => {
+        order.push("tree-kill");
+        return "terminated";
+      });
+
+    class TestACPAgentClient extends ACPAgentClient {
+      async closeSpawnedProbe(probe: SpawnedACPProcess): Promise<void> {
+        await this.closeProbe(probe);
+      }
+    }
+
+    const client = new TestACPAgentClient({
+      provider: "claude-acp",
+      logger: createTestLogger(),
+      defaultCommand: ["claude", "--acp"],
+      defaultModes: [],
+    });
+    const child = createProbeChildStub(order);
+
+    await client.closeSpawnedProbe({
+      child,
+      connection: {},
+      initialize: { agentCapabilities: {} },
+    } as SpawnedACPProcess);
+
+    expect(terminateWithTreeKill).toHaveBeenCalledWith(child, {
+      gracefulTimeoutMs: 2_000,
+      forceTimeoutMs: 2_000,
+    });
+    expect(order).toEqual(["tree-kill", "stdin.destroy", "stdout.destroy", "stderr.destroy"]);
   });
 });

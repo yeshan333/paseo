@@ -1656,12 +1656,13 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       }
     }
 
-    for (const terminal of this.terminalEntries.values()) {
-      await terminateWithTreeKill(terminal.child, {
+    const terminalTerminations = Array.from(this.terminalEntries.values(), (terminal) =>
+      terminateWithTreeKill(terminal.child, {
         gracefulTimeoutMs: 2_000,
         forceTimeoutMs: 2_000,
-      });
-    }
+      }),
+    );
+    await Promise.all(terminalTerminations);
     this.terminalEntries.clear();
 
     if (this.child) {
@@ -2882,8 +2883,11 @@ async function terminateChildProcess(
   child: ChildProcessWithoutNullStreams,
   timeoutMs: number,
 ): Promise<void> {
-  child.stdin.destroy();
-  child.stdout.destroy();
-  child.stderr.destroy();
-  await terminateWithTreeKill(child, { gracefulTimeoutMs: timeoutMs, forceTimeoutMs: timeoutMs });
+  try {
+    await terminateWithTreeKill(child, { gracefulTimeoutMs: timeoutMs, forceTimeoutMs: timeoutMs });
+  } finally {
+    child.stdin.destroy();
+    child.stdout.destroy();
+    child.stderr.destroy();
+  }
 }
