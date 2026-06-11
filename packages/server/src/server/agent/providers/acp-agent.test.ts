@@ -2007,6 +2007,35 @@ describe("ACPAgentSession close() tree-kill", () => {
     });
     expect(child.kill).not.toHaveBeenCalled();
   });
+
+  test("releaseTerminal uses terminateWithTreeKill before removing a running terminal", async () => {
+    const terminateWithTreeKill = vi
+      .spyOn(treeKillModule, "terminateWithTreeKill")
+      .mockResolvedValue("terminated");
+    const child = createTerminalChildStub();
+    vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
+    const session = createSession();
+
+    const terminal = await session.createTerminal({
+      sessionId: "session-1",
+      command: "sleep",
+      args: ["60"],
+    });
+
+    await session.releaseTerminal({
+      sessionId: "session-1",
+      terminalId: terminal.terminalId,
+    });
+
+    expect(terminateWithTreeKill).toHaveBeenCalledWith(child, {
+      gracefulTimeoutMs: 2_000,
+      forceTimeoutMs: 2_000,
+    });
+    expect(child.kill).not.toHaveBeenCalled();
+    await expect(
+      session.terminalOutput({ sessionId: "session-1", terminalId: terminal.terminalId }),
+    ).rejects.toThrow(`Unknown terminal '${terminal.terminalId}'`);
+  });
 });
 
 describe("ACPAgentClient probe cleanup", () => {
@@ -2022,10 +2051,21 @@ describe("ACPAgentClient probe cleanup", () => {
         order.push("tree-kill");
         return "terminated";
       });
+    const child = createProbeChildStub(order);
 
     class TestACPAgentClient extends ACPAgentClient {
-      async closeSpawnedProbe(probe: SpawnedACPProcess): Promise<void> {
-        await this.closeProbe(probe);
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
+        return {
+          child,
+          connection: {
+            newSession: vi.fn().mockResolvedValue({
+              modes: null,
+              models: null,
+              configOptions: [],
+            }),
+          },
+          initialize: { agentCapabilities: {} },
+        } as SpawnedACPProcess;
       }
     }
 
@@ -2035,13 +2075,8 @@ describe("ACPAgentClient probe cleanup", () => {
       defaultCommand: ["claude", "--acp"],
       defaultModes: [],
     });
-    const child = createProbeChildStub(order);
 
-    await client.closeSpawnedProbe({
-      child,
-      connection: {},
-      initialize: { agentCapabilities: {} },
-    } as SpawnedACPProcess);
+    await client.listModels({ cwd: "/tmp/acp-models", force: false });
 
     expect(terminateWithTreeKill).toHaveBeenCalledWith(child, {
       gracefulTimeoutMs: 2_000,
