@@ -1062,16 +1062,21 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.connection = spawned.connection;
     this.agentCapabilities = spawned.initialize.agentCapabilities ?? null;
 
-    const response = await this.runACPRequest(() =>
-      this.connection!.newSession({
-        cwd: this.config.cwd,
-        mcpServers: this.acpMcpServers(),
-      }),
-    );
-    this.sessionId = response.sessionId;
-    this.bootstrapThreadEventPending = true;
-    this.applySessionState(response);
-    await this.applyConfiguredOverrides();
+    try {
+      const response = await this.runACPRequest(() =>
+        this.connection!.newSession({
+          cwd: this.config.cwd,
+          mcpServers: this.acpMcpServers(),
+        }),
+      );
+      this.sessionId = response.sessionId;
+      this.bootstrapThreadEventPending = true;
+      this.applySessionState(response);
+      await this.applyConfiguredOverrides();
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
   }
 
   async initializeResumedSession(): Promise<void> {
@@ -1087,33 +1092,38 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.sessionId = handle.sessionId;
     this.bootstrapThreadEventPending = true;
 
-    const sessionCapabilities = this.agentCapabilities?.sessionCapabilities;
-    if (this.agentCapabilities?.loadSession) {
-      this.replayingHistory = true;
-      const response = await this.runACPRequest(() =>
-        this.connection!.loadSession({
-          sessionId: handle.sessionId,
-          cwd: this.config.cwd,
-          mcpServers: this.acpMcpServers(),
-        }),
-      );
-      this.replayingHistory = false;
-      this.historyPending = this.persistedHistory.length > 0;
-      this.applySessionState(response);
-    } else if (sessionCapabilities?.resume) {
-      const response = await this.runACPRequest(() =>
-        this.connection!.unstable_resumeSession({
-          sessionId: handle.sessionId,
-          cwd: this.config.cwd,
-          mcpServers: this.acpMcpServers(),
-        }),
-      );
-      this.applySessionState(response);
-    } else {
-      throw new Error(`${this.provider} does not support ACP session resume`);
-    }
+    try {
+      const sessionCapabilities = this.agentCapabilities?.sessionCapabilities;
+      if (this.agentCapabilities?.loadSession) {
+        this.replayingHistory = true;
+        const response = await this.runACPRequest(() =>
+          this.connection!.loadSession({
+            sessionId: handle.sessionId,
+            cwd: this.config.cwd,
+            mcpServers: this.acpMcpServers(),
+          }),
+        );
+        this.replayingHistory = false;
+        this.historyPending = this.persistedHistory.length > 0;
+        this.applySessionState(response);
+      } else if (sessionCapabilities?.resume) {
+        const response = await this.runACPRequest(() =>
+          this.connection!.unstable_resumeSession({
+            sessionId: handle.sessionId,
+            cwd: this.config.cwd,
+            mcpServers: this.acpMcpServers(),
+          }),
+        );
+        this.applySessionState(response);
+      } else {
+        throw new Error(`${this.provider} does not support ACP session resume`);
+      }
 
-    await this.applyConfiguredOverrides();
+      await this.applyConfiguredOverrides();
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
   }
 
   async run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult> {

@@ -2167,3 +2167,90 @@ describe("ACPAgentClient probe cleanup", () => {
     expect(child.stderr.destroyed).toBe(true);
   });
 });
+
+describe("ACPAgentSession initialization failure cleanup", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("initializeNewSession cleans up child process when newSession rejects", async () => {
+    const terminator = new FakeTerminator();
+    const fakeChild = {
+      kill: vi.fn(),
+      exitCode: null,
+      signalCode: null,
+      once: vi.fn(),
+    };
+
+    const session = createSession(terminator.terminate);
+
+    // Override the private spawnProcess to return a mock that fails on newSession
+    (session as unknown as Record<string, unknown>).spawnProcess = async () => ({
+      child: fakeChild,
+      connection: {
+        newSession: vi.fn().mockRejectedValue(new Error("Authentication required")),
+        unstable_closeSession: vi.fn(),
+        cancel: vi.fn(),
+      },
+      initialize: { agentCapabilities: {} },
+    });
+
+    await expect(session.initializeNewSession()).rejects.toThrow("Authentication required");
+
+    expect(terminator.terminated).toContain(fakeChild);
+  });
+
+  test("initializeResumedSession cleans up child process when loadSession rejects", async () => {
+    const terminator = new FakeTerminator();
+    const fakeChild = {
+      kill: vi.fn(),
+      exitCode: null,
+      signalCode: null,
+      once: vi.fn(),
+    };
+
+    const session = new ACPAgentSession(
+      {
+        provider: "claude-acp",
+        cwd: "/tmp/paseo-acp-test",
+      },
+      {
+        provider: "claude-acp",
+        logger: createTestLogger(),
+        defaultCommand: ["claude", "--acp"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+        handle: {
+          provider: "claude-acp",
+          sessionId: "session-1",
+          metadata: { cwd: "/tmp/paseo-acp-test" },
+        },
+        terminateProcess: terminator.terminate,
+      },
+    );
+
+    // Override the private spawnProcess to return a mock that fails on loadSession
+    (session as unknown as Record<string, unknown>).spawnProcess = async () => ({
+      child: fakeChild,
+      connection: {
+        loadSession: vi.fn().mockRejectedValue(new Error("Authentication required")),
+        unstable_closeSession: vi.fn(),
+        cancel: vi.fn(),
+      },
+      initialize: {
+        agentCapabilities: { loadSession: true },
+      },
+    });
+
+    await expect(session.initializeResumedSession()).rejects.toThrow("Authentication required");
+
+    expect(terminator.terminated).toContain(fakeChild);
+  });
+});
