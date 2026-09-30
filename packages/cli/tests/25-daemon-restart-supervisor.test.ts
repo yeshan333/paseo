@@ -176,7 +176,10 @@ import('node:fs').then(({appendFileSync}) => {
     "restart request should be acknowledged",
   );
 
-  const deadline = Date.now() + 20000;
+  // This includes graceful shutdown, a fresh worker startup and client reconnect.
+  // Cold startup can exceed 20 seconds on the shared CI runners.
+  const restartTimeoutMs = 60000;
+  const deadline = Date.now() + restartTimeoutMs;
   let statusAfterRestart = statusBeforeRestart;
   await waitFor(
     async () => {
@@ -193,7 +196,7 @@ import('node:fs').then(({appendFileSync}) => {
         throw error;
       }
     },
-    20000,
+    restartTimeoutMs,
     "worker pid did not change after restart request",
   );
   assert.notStrictEqual(
@@ -228,6 +231,9 @@ import('node:fs').then(({appendFileSync}) => {
     `restart should run daemon cleanup before replacing the worker, logs:\n${capturedSupervisorLogs}`,
   );
   console.log("✓ app-style restart keeps daemon healthy and restarts worker\n");
+} catch (error) {
+  console.error(await readCapturedSupervisorLogs(paseoHome, recentSupervisorLogs));
+  throw error;
 } finally {
   await client?.close();
   if (supervisorProcess?.pid && isProcessRunning(supervisorProcess.pid)) {
