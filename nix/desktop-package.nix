@@ -83,6 +83,9 @@ buildNpmPackage {
 
   env = {
     EXPO_NO_TELEMETRY = "1";
+    # Metro workers exceed Node's default heap while transforming the generated
+    # protocol validator. Match the macOS arm64 release build's heap allowance.
+    NODE_OPTIONS = "--max-old-space-size=4096";
     # Expo's web build pulls in some pre-bundled assets; ensure it doesn't try
     # to phone home during the build.
     CI = "1";
